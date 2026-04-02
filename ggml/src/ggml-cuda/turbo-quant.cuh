@@ -428,6 +428,7 @@ static __device__ __forceinline__ float turbo2_dequant_element(
 
 #define QR_TQ4_1S 1  // dequantize produces 2 consecutive elements
 #define QR_TQ3_1S 1
+#define QR_TQ4_0  1  // dequantize produces 2 consecutive elements (full-block inverse WHT)
 
 // ---- Weight centroids: Lloyd-Max for N(0,1) ----
 

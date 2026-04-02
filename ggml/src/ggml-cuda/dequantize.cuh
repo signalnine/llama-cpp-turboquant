@@ -134,6 +134,36 @@ static __device__ __forceinline__ void dequantize_tq4_1s(const void * vx, const 
     v.y = buf[iqs + 1];
 }
 
+// TQ4_0: WHT-rotated uniform 4-bit (q4_0-compatible), single scale, dp4a-friendly
+// Nibble packing: qs[j] = elem_j | (elem_{j+16} << 4) (same as q4_0)
+static __device__ __forceinline__ void dequantize_tq4_0(const void * vx, const int64_t ib, const int iqs, float2 & v) {
+    const block_tq4_0 * x = (const block_tq4_0 *) vx;
+    const float d = __half2float(x[ib].d);
+
+    // Unpack all 32 elements from interleaved nibble packing
+    float buf[32];
+    for (int j = 0; j < 16; j++) {
+        const uint8_t byte = x[ib].qs[j];
+        buf[j]      = ((int)(byte & 0xF) - 8) * d;      // low nibble = elem j
+        buf[j + 16] = ((int)(byte >> 4)  - 8) * d;      // high nibble = elem j+16
+    }
+
+    // Inverse RHT: WHT butterfly then normalize+unsign
+    for (int step = 1; step < 32; step <<= 1) {
+        for (int i = 0; i < 32; i += step << 1) {
+            for (int j = i; j < i + step; j++) {
+                float a = buf[j], b = buf[j + step];
+                buf[j] = a + b; buf[j + step] = a - b;
+            }
+        }
+    }
+    const float inv_sqrt32 = 0.17677669529663688f;
+    for (int j = 0; j < 32; j++) buf[j] *= inv_sqrt32 * TQ_WEIGHT_SIGNS[j];
+
+    v.x = buf[iqs];
+    v.y = buf[iqs + 1];
+}
+
 // TQ3_1S: 3-bit weight type with inverse WHT, block size 32, dual half-block scales
 // 3-bit packing: 4 groups of 8 indices in 3 bytes each (24 bits = 8 * 3-bit)
 static __device__ __forceinline__ void dequantize_tq3_1s(const void * vx, const int64_t ib, const int iqs, float2 & v) {

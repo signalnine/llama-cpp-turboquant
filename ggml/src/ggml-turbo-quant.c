@@ -994,3 +994,89 @@ size_t quantize_tq4_1s(const float * GGML_RESTRICT src, void * GGML_RESTRICT dst
     }
     return nrows * row_size;
 }
+
+/* ===== TQ4_0: WHT-rotated uniform 4-bit (dp4a-compatible) ===== */
+
+void quantize_row_tq4_0_ref(const float * GGML_RESTRICT x, block_tq4_0 * GGML_RESTRICT y, int64_t k) {
+    assert(k % QK_TQ4_0 == 0);
+    const int nb = k / QK_TQ4_0;
+
+    for (int block = 0; block < nb; block++) {
+        const float * src_blk = x + block * QK_TQ4_0;
+        block_tq4_0 * blk = &y[block];
+
+        /* 1. Forward RHT (signs → WHT → normalize) */
+        float buf[TQ_BLOCK_SIZE];
+        memcpy(buf, src_blk, TQ_BLOCK_SIZE * sizeof(float));
+        tq3_0_rht_forward(buf);
+
+        /* 2. Find max absolute value for uniform quantization */
+        float amax = 0.0f;
+        for (int j = 0; j < 32; j++) {
+            float v = fabsf(buf[j]);
+            if (v > amax) amax = v;
+        }
+
+        /* 3. Compute scale (same convention as q4_0: d = -max/8 if max > 0) */
+        float max_val = 0.0f;
+        for (int j = 0; j < 32; j++) {
+            if (amax == fabsf(buf[j])) { max_val = buf[j]; break; }
+        }
+        const float d = max_val / -8.0f;
+        const float id = d ? 1.0f / d : 0.0f;
+        blk->d = GGML_FP32_TO_FP16(d);
+
+        /* 4. Quantize + pack with q4_0-style interleaved nibble layout:
+         *    qs[j] = elem_j (low nibble) | (elem_{j+16} (high nibble) << 4)  */
+        memset(blk->qs, 0, QK_TQ4_0 / 2);
+        for (int j = 0; j < 16; j++) {
+            const float x0 = buf[j]      * id;
+            const float x1 = buf[j + 16] * id;
+            int xi0_i = (int)(x0 + 8.5f);
+            int xi1_i = (int)(x1 + 8.5f);
+            if (xi0_i < 0) xi0_i = 0; if (xi0_i > 15) xi0_i = 15;
+            if (xi1_i < 0) xi1_i = 0; if (xi1_i > 15) xi1_i = 15;
+            uint8_t xi0 = (uint8_t)xi0_i;
+            uint8_t xi1 = (uint8_t)xi1_i;
+            blk->qs[j] = xi0 | (xi1 << 4);
+        }
+    }
+}
+
+void dequantize_row_tq4_0(const block_tq4_0 * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k) {
+    assert(k % QK_TQ4_0 == 0);
+    const int nb = k / QK_TQ4_0;
+
+    for (int blk_i = 0; blk_i < nb; blk_i++) {
+        const float d = GGML_FP16_TO_FP32(x[blk_i].d);
+
+        /* Unpack interleaved nibbles: low = elem j, high = elem j+16 */
+        float buf[32];
+        for (int j = 0; j < 16; j++) {
+            const uint8_t byte = x[blk_i].qs[j];
+            buf[j]      = ((int)(byte & 0xF) - 8) * d;
+            buf[j + 16] = ((int)(byte >> 4)  - 8) * d;
+        }
+
+        /* Inverse RHT */
+        tq3_0_rht_inverse(buf);
+
+        memcpy(y + blk_i * QK_TQ4_0, buf, QK_TQ4_0 * sizeof(float));
+    }
+}
+
+size_t quantize_tq4_0(const float * GGML_RESTRICT src, void * GGML_RESTRICT dst,
+                       int64_t nrows, int64_t n_per_row, const float * imatrix) {
+    GGML_UNUSED(imatrix);
+    assert(n_per_row % QK_TQ4_0 == 0);
+
+    size_t row_size = (n_per_row / QK_TQ4_0) * sizeof(block_tq4_0);
+    for (int64_t row = 0; row < nrows; row++) {
+        quantize_row_tq4_0_ref(
+            src + row * n_per_row,
+            (block_tq4_0 *)((char *)dst + row * row_size),
+            n_per_row
+        );
+    }
+    return nrows * row_size;
+}

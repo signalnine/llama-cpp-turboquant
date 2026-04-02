@@ -357,6 +357,18 @@ typedef struct {
 } block_tq4_1s;                         // 20 bytes total
 static_assert(sizeof(block_tq4_1s) == 20, "wrong tq4_1s block size");
 
+// TQ4_0: WHT-rotated 4-bit weight quantization (uniform, dp4a-compatible)
+// Block size 32, single scale (like q4_0), nibble-interleaved packing
+// Per block: d(fp16) + 4-bit values packed (16 bytes) = 18 bytes per 32 values
+// = 4.5 bits/value
+// Nibble packing: qs[j] = elem_j (low nibble) | (elem_{j+16} (high nibble) << 4)
+#define QK_TQ4_0 32
+typedef struct {
+    ggml_half d;                        //  2 bytes: scale
+    uint8_t   qs[QK_TQ4_0 / 2];       // 16 bytes: 4-bit values nibble-interleaved
+} block_tq4_0;                          // 18 bytes total
+static_assert(sizeof(block_tq4_0) == sizeof(ggml_half) + QK_TQ4_0 / 2, "wrong tq4_0 block size");
+
 //
 // Super-block quantization structures
 //
