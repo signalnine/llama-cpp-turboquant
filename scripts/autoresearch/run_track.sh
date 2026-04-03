@@ -3,7 +3,8 @@
 #
 # Usage: run_track.sh <track-name> --experiments <N> [--quick-until-improvement] [--max-hours <H>]
 
-set -euo pipefail
+set -uo pipefail
+# Note: NOT using set -e — we handle errors explicitly to keep the loop running
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
@@ -39,7 +40,7 @@ MAX_SECONDS=$((MAX_HOURS * 3600))
 # ---- Create experiment branch ----
 BRANCH_NAME="autoresearch/$TRACK/$(date +%Y%m%d-%H%M%S)"
 cd "$REPO_DIR"
-git checkout -b "$BRANCH_NAME" 2>/dev/null || git switch -c "$BRANCH_NAME"
+git checkout -b "$BRANCH_NAME" 2>/dev/null || true
 BASELINE_SHA=$(git rev-parse HEAD)
 echo ">>> Branch: $BRANCH_NAME (base: ${BASELINE_SHA:0:8})" >&2
 
