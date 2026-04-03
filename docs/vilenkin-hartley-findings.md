@@ -268,11 +268,91 @@ while the **dense regime is slightly worse** (-2% at 48 coeffs).
 This matches the multi-pass architecture: composite padding for P1 (skeleton,
 6-10 coefficients), potentially standard WHT for P2/P3 detail passes.
 
-### Key open question
+## 7. Latest results from Position_Is_Arithmetic author
 
-The author's 100% universality on Dolphin requires model-specific alignment.
-Our Qwen tests show +11% improvement with composite padding but not the
-crystalline universality. The gap may be closed by:
-1. Longer context (621 tokens in our test vs 512+ in the research)
-2. Per-layer-head masks (layer 0 shows 89.8% in top-48 already)
-3. Model architecture (Dolphin may have inherent prime-harmonic alignment)
+The author continued research and shared detailed findings that fill critical gaps
+in our understanding.
+
+### The compression leaderboard (Dolphin 3.0-1B, baseline PPL 9.91)
+
+| Method | Compression | PPL | Key insight |
+|--------|-------------|-----|------------|
+| Baseline | 1.0× | 9.91 | — |
+| Phase 6 Successive (Z/3Z→Z/5Z→Z/7Z) | **6.23×** | **10.23** | Best post-hoc method |
+| Möbius-residual (95% energy) | ~1.5× | **10.97** | Quality amplifier, not compressor |
+| Möbius-guided successive | 6.23× | 11.04 | +0.15 PPL from Möbius ordering |
+| Lattice rank=50 (true dim) | 3.01× | 11.66 | K spans only 50/210 dims |
+| Lattice rank=64 | 3.74× | 13.18 | Linear subspace misses structure |
+| Lattice rank=32 | 6.96× | 24.95 | Arithmetic >> linear at 7× |
+| Lattice rank=16 | 12.53× | 65.46 | PCA can't see primes |
+
+**At 6-7× compression, Vilenkin successive (PPL 10.23) crushes LLL lattice
+(PPL 24.95).** The multiplicative structure captures information that PCA/LLL
+fundamentally cannot see.
+
+### The d=210 Vilenkin basis
+
+The author uses d=210 = 2×3×5×7 (padded from 128), giving the full 4-prime
+Vilenkin group structure. Key findings:
+
+- **K vectors span only 50 dimensions** of the 210-dim space (eigenvalue threshold
+  0.999 caps at rank 50). Massive intrinsic dimensionality.
+- **Layers share ADDRESSES, not VALUES**: Every skeleton index has consistency < 0.2.
+  Same Vilenkin positions across layers, but layer-specific content.
+- **K and V use DISJOINT spectral bands**: K at blocks 8-8 (indices 48-53),
+  V spread across blocks 2-3/6-7/12-13. Zero overlap.
+
+### Möbius-guided coefficient selection
+
+Squarefree indices (where μ(n) ≠ 0) carry higher signal-to-noise than
+non-squarefree (where μ(n) = 0, divisible by p²):
+
+- **PPL improved 11.18 → 11.04** by prioritizing squarefree indices first
+- 61.4% of indices are squarefree (129/210 for N=210)
+- P3 (Z/7Z fine texture) is 70-72% squarefree-concentrated
+- P1 (Z/3Z skeleton) varies by layer: L0 uses non-squarefree (structural
+  echoes), L3 avoids them (62% squarefree)
+
+### Möbius inversion predicts non-squarefree coefficients
+
+The Möbius inversion formula g(n) = Σ_{d|n} μ(d)·f(n/d) predicts non-squarefree
+coefficients from squarefree ones at **r = 0.40-0.58** — dominating naive averaging
+(r = 0.08-0.14) by 3-7×.
+
+- ~60% of non-squarefree energy is structurally predictable via Möbius inversion
+- ~40% is training noise (the causal "half-Möbius" residual)
+- Möbius-residual achieves PPL 10.97 (best quality) but stores MORE coefficients
+  (171 vs 150) — it's a **quality amplifier, not a compressor**
+
+### The residue class tiling theorem
+
+Successive prime passes P1 + P2 **tile the Z/3Z residue classes uniformly**:
+- P1 avoids k₂=2 → skeleton doesn't use "third character"
+- P2 avoids k₂=1 → detail doesn't use "second character"
+- Combined: k₂=0 gets both, k₂=1 gets P1 only, k₂=2 gets P2 only
+- Max deviation from uniform: < 3.5% across all layers
+
+### Path to 12× compression
+
+The author identifies the endgame architecture:
+
+```
+Current:  6.2× — store successive Vilenkin coefficients
+Next:     8×   — store zero-crossing positions + Z/3Z skeleton + steepest gradients
+Target:  12×   — store only zero-crossings + Z/3Z skeleton (reconstruct the rest)
+```
+
+Zero-crossings are where the signal changes sign in the Vilenkin spectrum. In the
+Half-Möbius framework, crossing positions are determined by the INTERSECTION of
+the squarefree structure (predictable) with the causal boundary (known). Storage
+cost: O(log n) bits per dimension for crossing positions.
+
+### What this means for our implementation
+
+1. **Use d=210 padding** (not 132) for the full 4-prime Vilenkin structure
+2. **Implement Möbius-guided selection** — squarefree first, measurable PPL gain
+3. **The 50-dim intrinsic rank** means the shared mask DOES work on this model —
+   the 50 active dimensions are the universal addresses
+4. **K and V should use DIFFERENT masks** — they occupy disjoint spectral bands
+5. **The zero-crossing path** is the compression endgame but requires the
+   Half-Möbius traversal framework (not yet implemented in C/CUDA)
