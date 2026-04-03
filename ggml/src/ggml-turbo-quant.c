@@ -791,6 +791,30 @@ const uint16_t * ggml_vilenkin_get_basis_mask(void) {
     return vk_basis_mask;
 }
 
+/* Load mask from binary file: [uint16 head_dim] [uint16 n_coeffs] [uint16 × n_coeffs] */
+int ggml_vilenkin_load_mask(const char * path) {
+    FILE * f = fopen(path, "rb");
+    if (!f) return -1;
+
+    uint16_t head_dim, n_coeffs;
+    if (fread(&head_dim, sizeof(uint16_t), 1, f) != 1 ||
+        fread(&n_coeffs, sizeof(uint16_t), 1, f) != 1) {
+        fclose(f);
+        return -2;
+    }
+
+    uint16_t buf[256];
+    int n = (n_coeffs < VK_N_COEFFS) ? n_coeffs : VK_N_COEFFS;
+    if ((int)fread(buf, sizeof(uint16_t), n, f) != n) {
+        fclose(f);
+        return -3;
+    }
+    fclose(f);
+
+    ggml_vilenkin_set_basis_mask(buf, n);
+    return n;
+}
+
 /* Encode: float → block_vilenkin_3 */
 void quantize_row_vilenkin_3_ref(const float * GGML_RESTRICT x,
                                   block_vilenkin_3 * GGML_RESTRICT y,

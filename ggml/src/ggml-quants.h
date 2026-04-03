@@ -121,6 +121,7 @@ GGML_API void dequantize_row_vilenkin_3(const block_vilenkin_3 * GGML_RESTRICT x
 // mask: array of VK_N_COEFFS uint16_t indices (which VHT basis positions to store)
 GGML_API void ggml_vilenkin_set_basis_mask(const uint16_t * mask, int n_coeffs);
 GGML_API const uint16_t * ggml_vilenkin_get_basis_mask(void);
+GGML_API int ggml_vilenkin_load_mask(const char * path);  // returns n_coeffs loaded, or negative on error
 
 GGML_API void iq2xs_init_impl(enum ggml_type type);
 GGML_API void iq2xs_free_impl(enum ggml_type type);

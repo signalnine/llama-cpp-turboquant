@@ -1,5 +1,8 @@
 #include "arg.h"
 
+// Forward declare from ggml-turbo-quant.c (C linkage)
+extern "C" int ggml_vilenkin_load_mask(const char * path);
+
 #include "chat.h"
 #include "common.h"
 #include "download.h"
@@ -2024,6 +2027,17 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
             params.cache_type_v = kv_cache_type_from_str(value);
         }
     ).set_env("LLAMA_ARG_CACHE_TYPE_V"));
+    add_opt(common_arg(
+        {"--vilenkin-mask"}, "FILE",
+        "load Vilenkin basis mask from calibration file (for --cache-type-k vilenkin3)",
+        [](common_params & params, const std::string & value) {
+            int n = ggml_vilenkin_load_mask(value.c_str());
+            if (n < 0) {
+                throw std::runtime_error("failed to load Vilenkin mask from: " + value);
+            }
+            fprintf(stderr, "Loaded Vilenkin mask: %d coefficients from %s\n", n, value.c_str());
+        }
+    ));
     add_opt(common_arg(
         {"--hellaswag"},
         "compute HellaSwag score over random tasks from datafile supplied with -f",
