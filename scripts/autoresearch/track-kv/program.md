@@ -59,9 +59,28 @@ attention for one head. The kernel has two main phases:
 
 ## Promising Directions to Explore
 Focus on STRUCTURAL changes to the kernel, not parameter tuning.
-- **V dequant arithmetic optimization**: Current V dequant does centroid lookup +
-  norm multiply per element. Could precompute scaled centroids per V block.
-- **KQ scoring with dp4a**: If Q and K can both be int8, dp4a for KQ dot product.
+
+### From community discussion (ggml-org/llama.cpp#20969)
+
+- **Fused K tile loader (dusterbloom/Madreag approach)**: Keep K in compressed TBQ3
+  format in the MMA kernel, fuse dequant into the tile loader. Zero temp buffer for K.
+  This is how Madreag's optimized fork achieves near-parity with q8_0 on prefill.
+- **cp.async pipeline for V tiles**: Bulk dequant V → fp16, then use cp.async.cg
+  for V tile loads into shared memory. Overlaps V dequant with K scoring compute.
+- **Hybrid prefill architecture**: Different code paths for prefill (MMA with fused
+  tile loaders) vs decode (VEC with current approach). Prefill benefits most from
+  tile-level fusion.
+- **Precomputed scaled centroids per V block**: Instead of `centroid[idx] * norm`
+  per element, precompute `scaled_centroid[idx] = centroid[idx] * norm` once per
+  block (4 or 8 entries × 1 float each). Eliminates one multiply per V element.
+- **Cross-head WHT (AmesianX)**: For models with head_dim=64, apply WHT across
+  multiple KV heads via Kronecker decomposition (H_512 = H_8 ⊗ H_64). Claims
+  better decorrelation for small head dims.
+
+### Kernel-level ideas
+
+- **KQ scoring with dp4a**: Q is already q8_1. If K centroids can be mapped to
+  int8 per-block (like we proved with TQ4_0), dp4a for KQ dot product.
 - **Warp specialization**: Dedicate some warps to K prefetch, others to V prefetch.
 - **Double buffering**: Prefetch next KV block while processing current one
   using cp.async or separate warp.

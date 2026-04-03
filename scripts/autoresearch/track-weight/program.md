@@ -73,8 +73,26 @@ The real bottleneck is:
 | V19 | ILP 4× unroll | 70 t/s | Negligible improvement |
 
 ## Promising Directions to Explore
+
+### From community discussion (ggml-org/llama.cpp#20969)
+
+- **Entropy-coded weight compression (karambaso idea)**: With only 16 centroid
+  values, 4-bit indices have low entropy. Runtime Huffman/ANS decompression in
+  shmem could reduce effective bandwidth 30-50%. Decode is memory-bound, so extra
+  compute for decompression may be free. This reframes the problem: instead of
+  faster dequant, read less data.
+- **Fused tile loader pattern (from Madreag's KV work)**: Load multiple weight
+  blocks into shmem, dequant in-register from shmem. Amortizes global memory
+  latency across a tile of blocks.
+- **F32 vs fp16 activation precision**: AmesianX notes WHT amplifies q8_1
+  quantization error ~16x. Our V8 uses f32 activation which avoids this.
+  But fp16 activation would halve bandwidth. Worth testing if the quality
+  tradeoff is acceptable for weights (less sensitive than KV cache).
+
+### Kernel-level ideas
+
 - **half2 packed FMA**: Process 2 elements per `__hmul2`/`__hfma2` instruction.
-  Centroids in fp16 constant memory, activation in fp16.
+  Centroids in fp16 constant memory, activation in fp16. 2x arithmetic density.
 - **Warp-cooperative coalesced loading**: Reorganize memory access so weight loads
   are fully coalesced (currently scattered due to per-lane block access).
 - **Register blocking across blocks**: Each lane accumulates across multiple
@@ -83,11 +101,15 @@ The real bottleneck is:
   computing current block.
 - **Different warp configurations**: Try 4 or 16 warps instead of 8.
 - **Two-level tiling**: Load a tile of blocks to shmem, process tile, repeat.
+  This is the shmem activation variant (V12) but for weights instead.
 - **Vectorized weight loads**: Load 4 bytes (8 nibbles) per lane per iteration
   instead of extracting one nibble at a time.
 - **Activation compression**: Quantize pre-rotated activation to fp16 or int8
   to reduce bandwidth (loses some precision but may be worth it).
 - **Stream-K style decomposition**: Different work partitioning across warps.
+- **Per-block centroid pre-scale**: Pre-multiply centroid × d_half into a
+  16-entry fp16 LUT in registers (not shmem). Then inner loop is just
+  `lut[idx] * activation` — one FMA instead of two multiplies.
 
 ## Constraints
 - Must not change the block_tq4_1s ABI (format is shared with Metal/CPU)
