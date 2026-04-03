@@ -1,0 +1,10 @@
+{
+  "model": "/mnt/ai/models/huggingface/qwen3.5-35b-a3b-GGUF/Qwen_Qwen3.5-35B-A3B-Q4_K_M.gguf",
+  "bench_args": "-p 512 -n 128 --cache-type-k turbo3 --cache-type-v turbo3",
+  "tg128": 187.0,
+  "pp512": 4200,
+  "ppl": 0,
+  "ppl_threshold": 0.1,
+  "ppl_file": "/mnt/ai/data/wikitext-2-raw/wiki.test.raw",
+  "target_file": "ggml/src/ggml-cuda/fattn-vec.cuh"
+}

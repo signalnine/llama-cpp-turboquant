@@ -647,8 +647,13 @@ static void ggml_backend_cuda_buffer_set_tensor(ggml_backend_buffer_t buffer, gg
 
     ggml_cuda_set_device(ctx->device);
 
-    // TQ4_1S → q8_0 load-time conversion
-    if (tensor->type == GGML_TYPE_TQ4_1S && offset == 0 && size == ggml_nbytes(tensor)) {
+    // TQ4_1S → q8_0 load-time conversion (disable with GGML_TQ_NO_CONVERT=1)
+    static int tq_no_convert = -1;
+    if (tq_no_convert == -1) {
+        const char * env = getenv("GGML_TQ_NO_CONVERT");
+        tq_no_convert = (env && env[0] == '1') ? 1 : 0;
+    }
+    if (!tq_no_convert && tensor->type == GGML_TYPE_TQ4_1S && offset == 0 && size == ggml_nbytes(tensor)) {
         const int64_t n_elements = ggml_nelements(tensor);
 
         // Upload TQ4_1S to a temp GPU buffer
