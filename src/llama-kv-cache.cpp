@@ -282,20 +282,23 @@ llama_kv_cache::llama_kv_cache(
                 }
             }
         }
-        // For turbo types, pad K head_dim to next multiple of 128 for full WHT groups
+        // For turbo types, pad K head_dim to next multiple of 128 for block format.
+        // The rotation group_size is set separately — Vilenkin uses the actual head_dim,
+        // WHT uses 128 or 64. Padding ensures the turbo3 block format (QK=128) works.
         uint32_t n_embd_k_gqa_eff = n_embd_k_gqa;
         const bool k_is_turbo = (layer_type_k == GGML_TYPE_TURBO3_0 || layer_type_k == GGML_TYPE_TURBO4_0 || layer_type_k == GGML_TYPE_TURBO2_0);
         if (k_is_turbo && n_embd_head_k % 128 != 0) {
             const uint32_t padded_head_k = ((n_embd_head_k + 127) / 128) * 128;
             const uint32_t n_head_kv = n_embd_k_gqa / n_embd_head_k;
             n_embd_k_gqa_eff = n_head_kv * padded_head_k;
+            const bool uses_vilenkin = (n_embd_head_k % 64 != 0);
             if (il == 0) {
-                LLAMA_LOG_INFO("%s: turbo zero-padding K head_dim %u -> %u (cache %u -> %u)\n",
-                               __func__, n_embd_head_k, padded_head_k, n_embd_k_gqa, n_embd_k_gqa_eff);
+                LLAMA_LOG_INFO("%s: turbo %s K head_dim %u -> %u padded (cache %u -> %u)\n",
+                               __func__, uses_vilenkin ? "Vilenkin" : "WHT",
+                               n_embd_head_k, padded_head_k, n_embd_k_gqa, n_embd_k_gqa_eff);
             }
         }
 
-        // For turbo types, pad V head_dim to next multiple of 128 if needed
         const uint32_t n_embd_head_v = hparams.n_embd_head_v(il);
         uint32_t n_embd_v_gqa_eff = n_embd_v_gqa;
         const bool v_is_turbo = (layer_type_v == GGML_TYPE_TURBO3_0 || layer_type_v == GGML_TYPE_TURBO4_0 || layer_type_v == GGML_TYPE_TURBO2_0);
@@ -303,9 +306,11 @@ llama_kv_cache::llama_kv_cache(
             const uint32_t padded_head_v = ((n_embd_head_v + 127) / 128) * 128;
             const uint32_t n_head_kv = n_embd_v_gqa / n_embd_head_v;
             n_embd_v_gqa_eff = n_head_kv * padded_head_v;
+            const bool uses_vilenkin = (n_embd_head_v % 64 != 0);
             if (il == 0) {
-                LLAMA_LOG_INFO("%s: turbo zero-padding V head_dim %u -> %u (cache %u -> %u)\n",
-                               __func__, n_embd_head_v, padded_head_v, n_embd_v_gqa, n_embd_v_gqa_eff);
+                LLAMA_LOG_INFO("%s: turbo %s V head_dim %u -> %u padded (cache %u -> %u)\n",
+                               __func__, uses_vilenkin ? "Vilenkin" : "WHT",
+                               n_embd_head_v, padded_head_v, n_embd_v_gqa, n_embd_v_gqa_eff);
             }
         }
 

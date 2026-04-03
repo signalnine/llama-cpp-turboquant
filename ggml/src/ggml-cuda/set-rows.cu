@@ -546,6 +546,10 @@ static void set_rows_cuda_turbo3(
     // Default to 128 if not set (backward compat with head_dim=128 models).
     int group_size = 128;
     memcpy(&group_size, dst->op_params, sizeof(int));
+    if (group_size <= 0) group_size = 128;
+    // For non-power-of-2 group sizes (Vilenkin path), SET_ROWS uses group_size=128
+    // with zero-padded input. The Vilenkin rotation is handled by TURBO_WHT op separately.
+    // TODO: fused Vilenkin rotation+quantize in SET_ROWS for non-pow2 dims
     if (group_size != 64 && group_size != 128) group_size = 128;
     GGML_ASSERT(ne00 % group_size == 0);
 
@@ -891,6 +895,10 @@ static void set_rows_cuda_turbo2(
 
     int group_size = 128;
     memcpy(&group_size, dst->op_params, sizeof(int));
+    if (group_size <= 0) group_size = 128;
+    // For non-power-of-2 group sizes (Vilenkin path), SET_ROWS uses group_size=128
+    // with zero-padded input. The Vilenkin rotation is handled by TURBO_WHT op separately.
+    // TODO: fused Vilenkin rotation+quantize in SET_ROWS for non-pow2 dims
     if (group_size != 64 && group_size != 128) group_size = 128;
     GGML_ASSERT(ne00 % group_size == 0);
 

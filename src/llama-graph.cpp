@@ -17,6 +17,14 @@
 #include <sstream>
 #include <unordered_set>
 
+// TurboQuant: select WHT/Vilenkin group size based on head dimension.
+// Power-of-2: use 128 or 64. Non-power-of-2: use full dim (Vilenkin path).
+static int turbo_select_group_size(int64_t head_dim) {
+    if (head_dim % 128 == 0) return 128;
+    if (head_dim %  64 == 0) return  64;
+    return (int)head_dim;  // Vilenkin-Hartley for non-power-of-2 (e.g., 80)
+}
+
 // dedup helpers
 
 static ggml_tensor * build_attn_inp_kq_mask(
@@ -1887,7 +1895,7 @@ ggml_tensor * llm_graph_context::build_attn_mha(
         if (v->type == GGML_TYPE_TURBO3_0 || v->type == GGML_TYPE_TURBO4_0 || v->type == GGML_TYPE_TURBO2_0) {
             const bool k_is_turbo = (k->type == GGML_TYPE_TURBO3_0 || k->type == GGML_TYPE_TURBO4_0 || k->type == GGML_TYPE_TURBO2_0);
             const ggml_tensor * group_src = k_is_turbo ? k : v;
-            const int turbo_group = (group_src->ne[0] % 128 == 0) ? 128 : 64;
+            const int turbo_group = turbo_select_group_size(group_src->ne[0]);
             if (cur->ne[0] % turbo_group == 0) {
                 if (!ggml_is_contiguous(cur)) { cur = ggml_cont(ctx0, cur); }
                 ggml_tensor * innerq_scale = mctx ? mctx->get_turbo_innerq_scale_inv() : nullptr;
@@ -1965,7 +1973,7 @@ ggml_tensor * llm_graph_context::build_attn_mha(
         if (v->type == GGML_TYPE_TURBO3_0 || v->type == GGML_TYPE_TURBO4_0 || v->type == GGML_TYPE_TURBO2_0) {
             const bool k_is_turbo = (k->type == GGML_TYPE_TURBO3_0 || k->type == GGML_TYPE_TURBO4_0 || k->type == GGML_TYPE_TURBO2_0);
             const ggml_tensor * group_src = k_is_turbo ? k : v;
-            const int turbo_group = (group_src->ne[0] % 128 == 0) ? 128 : 64;
+            const int turbo_group = turbo_select_group_size(group_src->ne[0]);
             if (kqv->ne[0] % turbo_group == 0) {
                 if (!ggml_is_contiguous(kqv)) { kqv = ggml_cont(ctx0, kqv); }
                 ggml_tensor * innerq_scale = mctx ? mctx->get_turbo_innerq_scale_inv() : nullptr;
@@ -2152,16 +2160,19 @@ ggml_tensor * llm_graph_context::build_attn(
 
     // TurboQuant pre-rotate-queries: O(d log d) WHT rotation via custom op
     // Q shape: (n_embd_head, n_head, n_tokens)
-    // For zero-padded models (head_dim not 128-aligned), pad Q to match padded K dim first.
+    // For turbo KV: rotate Q to match rotated K. Power-of-2 dims may need zero-padding.
+    // Non-power-of-2 dims use Vilenkin-Hartley (no padding needed).
     if (k->type == GGML_TYPE_TURBO3_0 || k->type == GGML_TYPE_TURBO4_0 || k->type == GGML_TYPE_TURBO2_0) {
-        // Pad Q per-head to next multiple of 128 if needed
-        if (q->ne[0] % 128 != 0) {
-            const int64_t pad = ((q->ne[0] + 127) / 128) * 128 - q->ne[0];
+        const int turbo_group = turbo_select_group_size(k->ne[0]);
+        const bool needs_pad = (turbo_group == 128 || turbo_group == 64) && q->ne[0] % turbo_group != 0;
+        if (needs_pad) {
+            // Zero-pad Q to match padded K dim (power-of-2 WHT path only)
+            const int64_t pad = ((q->ne[0] + turbo_group - 1) / turbo_group) * turbo_group - q->ne[0];
             q = ggml_pad(ctx0, q, pad, 0, 0, 0);
         }
         if (!ggml_is_contiguous(q)) { q = ggml_cont(ctx0, q); }
         ggml_tensor * innerq_scale = mctx_cur->get_turbo_innerq_scale_inv();
-        q = ggml_turbo_wht(ctx0, q, 0, 0, innerq_scale);  // 0 = forward, 0 = auto group size from q->ne[0]
+        q = ggml_turbo_wht(ctx0, q, 0, turbo_group, innerq_scale);
     }
 
     ggml_tensor * cur = build_attn_mha(q, k, v, kq_b, kq_mask, sinks, v_mla, kq_scale, il);
@@ -2266,16 +2277,16 @@ ggml_tensor * llm_graph_context::build_attn(
     ggml_tensor * v = ggml_view_4d(ctx0, k, v_cur->ne[0], k->ne[1], k->ne[2], k->ne[3], k->nb[1], k->nb[2], k->nb[3], 0);
 
     // TurboQuant: pre-rotate Q for K-only (MLA) attention
-    // For zero-padded models, pad Q to match padded K dim first.
     if (k->type == GGML_TYPE_TURBO3_0 || k->type == GGML_TYPE_TURBO4_0 || k->type == GGML_TYPE_TURBO2_0) {
-        // Pad Q per-head to next multiple of 128 if needed
-        if (q->ne[0] % 128 != 0) {
-            const int64_t pad = ((q->ne[0] + 127) / 128) * 128 - q->ne[0];
+        const int turbo_group = turbo_select_group_size(k->ne[0]);
+        const bool needs_pad = (turbo_group == 128 || turbo_group == 64) && q->ne[0] % turbo_group != 0;
+        if (needs_pad) {
+            const int64_t pad = ((q->ne[0] + turbo_group - 1) / turbo_group) * turbo_group - q->ne[0];
             q = ggml_pad(ctx0, q, pad, 0, 0, 0);
         }
         if (!ggml_is_contiguous(q)) { q = ggml_cont(ctx0, q); }
         ggml_tensor * innerq_scale = mctx_cur->get_turbo_innerq_scale_inv();
-        q = ggml_turbo_wht(ctx0, q, 0, 0, innerq_scale);  // 0 = forward, 0 = auto group size
+        q = ggml_turbo_wht(ctx0, q, 0, turbo_group, innerq_scale);
     }
 
     ggml_tensor * cur = build_attn_mha(q, k, v, kq_b, kq_mask, sinks, v_mla, kq_scale, il);
@@ -2374,15 +2385,17 @@ ggml_tensor * llm_graph_context::build_attn(
     ggml_tensor * k = mctx_cur->get_k(ctx0, il);
     ggml_tensor * v = mctx_cur->get_v(ctx0, il);
 
-    // TurboQuant: pre-rotate Q for ISWA attention (pad to 128-aligned if needed)
+    // TurboQuant: pre-rotate Q for ISWA attention
     if (k->type == GGML_TYPE_TURBO3_0 || k->type == GGML_TYPE_TURBO4_0 || k->type == GGML_TYPE_TURBO2_0) {
-        if (q->ne[0] % 128 != 0) {
-            const int64_t pad = ((q->ne[0] + 127) / 128) * 128 - q->ne[0];
+        const int turbo_group = turbo_select_group_size(k->ne[0]);
+        const bool needs_pad = (turbo_group == 128 || turbo_group == 64) && q->ne[0] % turbo_group != 0;
+        if (needs_pad) {
+            const int64_t pad = ((q->ne[0] + turbo_group - 1) / turbo_group) * turbo_group - q->ne[0];
             q = ggml_pad(ctx0, q, pad, 0, 0, 0);
         }
         if (!ggml_is_contiguous(q)) { q = ggml_cont(ctx0, q); }
         ggml_tensor * innerq_scale = mctx_cur->get_turbo_innerq_scale_inv();
-        q = ggml_turbo_wht(ctx0, q, 0, 0, innerq_scale);
+        q = ggml_turbo_wht(ctx0, q, 0, turbo_group, innerq_scale);
     }
 
     ggml_tensor * cur = build_attn_mha(q, k, v, kq_b, kq_mask, sinks, v_mla, kq_scale, il);
