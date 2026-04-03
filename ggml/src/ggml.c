@@ -6234,9 +6234,11 @@ struct ggml_tensor * ggml_turbo_wht(
 
     // Auto-detect group size from tensor dimension if not specified
     if (group_size == 0) {
-        group_size = (a->ne[0] % 128 == 0) ? 128 : 64;
+        group_size = (a->ne[0] % 128 == 0) ? 128 :
+                     (a->ne[0] % 64  == 0) ? 64  :
+                                              (int)a->ne[0]; // Vilenkin: use full head_dim
     }
-    GGML_ASSERT(group_size == 64 || group_size == 128);
+    GGML_ASSERT(group_size > 0);
     GGML_ASSERT(a->ne[0] % group_size == 0);
 
     struct ggml_tensor * result = ggml_new_tensor(ctx, GGML_TYPE_F32, 4, a->ne);

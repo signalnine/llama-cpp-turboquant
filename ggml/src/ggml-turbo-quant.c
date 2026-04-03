@@ -239,6 +239,138 @@ static void turbo_cpu_fwht(float * x, int group_size) {
     for (int i = 0; i < group_size; i++) x[i] *= inv_sqrt * s2[i];
 }
 
+/* ---------- Vilenkin-Hartley Transform (mixed-radix, any dimension) ---------- */
+/*
+ * Generalizes WHT to non-power-of-2 dimensions via mixed-radix butterfly.
+ * For power-of-2 dimensions, reduces exactly to WHT.
+ *
+ * Factorizes n into primes, applies one butterfly stage per factor:
+ *   p=2: standard WHT butterfly (add/subtract)
+ *   p>2: p-point Discrete Hartley Transform (cas kernel: cos+sin)
+ *
+ * The DHT is real-valued and self-inverse: VHT(VHT(x)) = x (after normalization).
+ */
+
+/* Prime factorization: fills factors[], returns count. Max 20 factors for any practical dim. */
+static int vilenkin_prime_factors(int n, int factors[20]) {
+    int count = 0;
+    int d = 2;
+    while (d * d <= n && count < 20) {
+        while (n % d == 0) {
+            factors[count++] = d;
+            n /= d;
+        }
+        d++;
+    }
+    if (n > 1 && count < 20) factors[count++] = n;
+    return count;
+}
+
+/* In-place Vilenkin-Hartley Transform. Self-inverse (with 1/sqrt(n) normalization). */
+static void vilenkin_hartley_transform(float * x, int n) {
+    if (n <= 1) return;
+
+    int factors[20];
+    int n_factors = vilenkin_prime_factors(n, factors);
+
+    int stride = 1;
+    for (int f = 0; f < n_factors; f++) {
+        int p = factors[f];
+
+        if (p == 2) {
+            /* Binary butterfly — same as WHT stage */
+            for (int i = 0; i < n; i += stride * 2) {
+                for (int j = 0; j < stride; j++) {
+                    float a = x[i + j], b = x[i + j + stride];
+                    x[i + j]          = a + b;
+                    x[i + j + stride] = a - b;
+                }
+            }
+        } else {
+            /* p-ary Hartley butterfly: cas(2*pi*k*m/p) = cos + sin */
+            float tmp[16]; /* p <= 13 for any practical head_dim */
+            assert(p <= 16);
+            for (int i = 0; i < n; i += stride * p) {
+                for (int j = 0; j < stride; j++) {
+                    /* Gather p elements */
+                    for (int k = 0; k < p; k++)
+                        tmp[k] = x[i + j + k * stride];
+
+                    /* Apply p-point DHT: result[k] = sum_m tmp[m] * cas(2*pi*k*m/p) */
+                    for (int k = 0; k < p; k++) {
+                        float sum = 0.0f;
+                        for (int m = 0; m < p; m++) {
+                            float theta = 2.0f * 3.14159265358979323846f * (float)(k * m) / (float)p;
+                            sum += tmp[m] * (cosf(theta) + sinf(theta));
+                        }
+                        x[i + j + k * stride] = sum;
+                    }
+                }
+            }
+        }
+        stride *= p;
+    }
+
+    /* Normalize */
+    float inv_sqrt = 1.0f / sqrtf((float)n);
+    for (int i = 0; i < n; i++) x[i] *= inv_sqrt;
+}
+
+/* Forward Vilenkin rotation: signs1 → VHT → signs2 (or signs1 → WHT → signs2 for pow2) */
+static void turbo_cpu_vilenkin_forward(float * x, int group_size) {
+    const float * s1 = turbo_cpu_s1;
+    const float * s2 = turbo_cpu_s2;
+
+    /* Check if power-of-2 — use fast WHT path */
+    if ((group_size & (group_size - 1)) == 0 && group_size <= 128) {
+        turbo_cpu_fwht(x, group_size);
+        return;
+    }
+
+    /* Non-power-of-2: generate signs from PRNG (same seed as CUDA/Metal would use) */
+    /* For now, use identity signs for non-pow2 (no precomputed sign arrays for these dims) */
+    /* TODO: generate signs from seed=42 for arbitrary group_size */
+
+    vilenkin_hartley_transform(x, group_size);
+}
+
+/* Inverse Vilenkin rotation: signs2 → VHT → signs1 (self-inverse property) */
+static void turbo_cpu_vilenkin_inverse(float * x, int group_size) {
+    /* VHT is self-inverse, so inverse = forward with swapped sign arrays */
+    if ((group_size & (group_size - 1)) == 0 && group_size <= 128) {
+        /* Power-of-2: use existing inverse WHT path */
+        const float * s1 = turbo_cpu_s1;
+        const float * s2 = turbo_cpu_s2;
+        const float inv_sqrt = 1.0f / sqrtf((float)group_size);
+
+        /* signs2 first (inverse order) */
+        for (int i = 0; i < group_size; i++) x[i] *= s2[i];
+
+        /* WHT butterfly */
+        for (int h = 1; h < group_size; h *= 2) {
+            for (int i = 0; i < group_size; i += h * 2) {
+                for (int j = i; j < i + h; j++) {
+                    float a = x[j], b = x[j + h];
+                    x[j]     = a + b;
+                    x[j + h] = a - b;
+                }
+            }
+        }
+
+        /* normalize + signs1 */
+        for (int i = 0; i < group_size; i++) x[i] *= inv_sqrt * s1[i];
+        return;
+    }
+
+    /* Non-power-of-2: VHT is self-inverse */
+    vilenkin_hartley_transform(x, group_size);
+}
+
+/* Public API for Vilenkin-Hartley Transform (called from ops.cpp) */
+void ggml_vilenkin_hartley_transform(float * x, int n) {
+    vilenkin_hartley_transform(x, n);
+}
+
 /* ---------- TURBO3_0: 3-bit PolarQuant with WHT rotation ---------- */
 
 void quantize_row_turbo3_0_ref(const float * GGML_RESTRICT x, block_turbo3_0 * GGML_RESTRICT y, int64_t k) {

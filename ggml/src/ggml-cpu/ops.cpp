@@ -2,6 +2,7 @@
 
 #include "ggml-cpu.h"
 #include "ggml-impl.h"
+#include "ggml-quants.h"
 #include "binary-ops.h"
 #include "simd-gemm.h"
 #include "ggml.h"
@@ -10659,7 +10660,7 @@ static void ggml_compute_forward_turbo_wht_f32(
         const int64_t grp_in_head = g % groups_per_head;
         const int64_t base        = head_idx * head_dim + grp_in_head * group_size;
 
-        float x[128];  // max group_size
+        float x[256];  // max group_size (128 for WHT, up to 256 for Vilenkin)
         const float * in = src_data + base;
 
         // InnerQ forward: apply scale_inv BEFORE signs+WHT (for Q pre-rotation)
@@ -10669,24 +10670,32 @@ static void ggml_compute_forward_turbo_wht_f32(
             for (int i = 0; i < group_size; i++) x[i] = in[i];
         }
 
-        // Apply first signs
-        for (int i = 0; i < group_size; i++) x[i] *= s_first[i];
+        const bool is_pow2 = (group_size & (group_size - 1)) == 0;
 
-        // WHT butterfly (log2(group_size) stages)
-        for (int h = 1; h < group_size; h *= 2) {
-            for (int i = 0; i < group_size; i += h * 2) {
-                for (int j = i; j < i + h; j++) {
-                    float a = x[j], b = x[j + h];
-                    x[j] = a + b;
-                    x[j + h] = a - b;
+        if (is_pow2) {
+            // Standard WHT path (power-of-2 group sizes)
+            for (int i = 0; i < group_size; i++) x[i] *= s_first[i];
+
+            for (int h = 1; h < group_size; h *= 2) {
+                for (int i = 0; i < group_size; i += h * 2) {
+                    for (int j = i; j < i + h; j++) {
+                        float a = x[j], b = x[j + h];
+                        x[j] = a + b;
+                        x[j + h] = a - b;
+                    }
                 }
             }
+
+            for (int i = 0; i < group_size; i++) x[i] *= inv_sqrt * s_second[i];
+        } else {
+            // Vilenkin-Hartley path (non-power-of-2, e.g. head_dim=80)
+            ggml_vilenkin_hartley_transform(x, group_size);
         }
 
-        // Normalize + second signs
+        // Write output
         float * out = dst_data + base;
         for (int i = 0; i < group_size; i++) {
-            float val = x[i] * inv_sqrt * s_second[i];
+            float val = x[i];
             // InnerQ inverse: apply scale_inv AFTER WHT+signs (for V un-rotation)
             if (direction == 1 && scale_inv != NULL) {
                 val *= scale_inv[i % group_size];
