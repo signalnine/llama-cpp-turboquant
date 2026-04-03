@@ -30,8 +30,7 @@ if [[ ! -f "$TRACK_DIR/program.md" ]]; then
     exit 1
 fi
 
-TARGET_FILE=$(grep -oP '(?<=Target File\n).*\.cu' "$TRACK_DIR/program.md" 2>/dev/null || \
-              grep -oP '[a-zA-Z0-9/_-]+\.cu' "$TRACK_DIR/program.md" | head -1)
+TARGET_FILE=$(jq -r '.target_file' "$TRACK_DIR/baseline.json")
 HISTORY_FILE="$TRACK_DIR/history.jsonl"
 BASELINE_FILE="$TRACK_DIR/baseline.json"
 START_TIME=$(date +%s)
