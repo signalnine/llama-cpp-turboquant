@@ -17,6 +17,12 @@
 #include <sstream>
 #include <unordered_set>
 
+// Helper: is this a TurboQuant rotated KV cache type?
+static bool ggml_is_turbo_type(ggml_type type) {
+    return type == GGML_TYPE_TURBO3_0 || type == GGML_TYPE_TURBO4_0 ||
+           type == GGML_TYPE_TURBO2_0 || type == GGML_TYPE_VILENKIN_3;
+}
+
 // TurboQuant: select WHT/Vilenkin group size based on head dimension.
 // Power-of-2: use 128 or 64. Non-power-of-2: use full dim (Vilenkin path).
 static int turbo_select_group_size(int64_t head_dim) {
@@ -1892,8 +1898,8 @@ ggml_tensor * llm_graph_context::build_attn_mha(
         // TurboQuant: inverse WHT on FA output when V values are WHT-rotated.
         // For MLA, V is a view of K with different ne[0] (e.g. V=512, K=576).
         // Group size must come from K (which determines the WHT rotation), not V.
-        if (v->type == GGML_TYPE_TURBO3_0 || v->type == GGML_TYPE_TURBO4_0 || v->type == GGML_TYPE_TURBO2_0) {
-            const bool k_is_turbo = (k->type == GGML_TYPE_TURBO3_0 || k->type == GGML_TYPE_TURBO4_0 || k->type == GGML_TYPE_TURBO2_0);
+        if (ggml_is_turbo_type(v->type)) {
+            const bool k_is_turbo = (ggml_is_turbo_type(k->type));
             const ggml_tensor * group_src = k_is_turbo ? k : v;
             const int turbo_group = turbo_select_group_size(group_src->ne[0]);
             if (cur->ne[0] % turbo_group == 0) {
@@ -1970,8 +1976,8 @@ ggml_tensor * llm_graph_context::build_attn_mha(
         cb(kqv, "kqv", il);
 
         // TurboQuant: inverse WHT on attention output (non-FA path)
-        if (v->type == GGML_TYPE_TURBO3_0 || v->type == GGML_TYPE_TURBO4_0 || v->type == GGML_TYPE_TURBO2_0) {
-            const bool k_is_turbo = (k->type == GGML_TYPE_TURBO3_0 || k->type == GGML_TYPE_TURBO4_0 || k->type == GGML_TYPE_TURBO2_0);
+        if (ggml_is_turbo_type(v->type)) {
+            const bool k_is_turbo = (ggml_is_turbo_type(k->type));
             const ggml_tensor * group_src = k_is_turbo ? k : v;
             const int turbo_group = turbo_select_group_size(group_src->ne[0]);
             if (kqv->ne[0] % turbo_group == 0) {
@@ -2162,7 +2168,7 @@ ggml_tensor * llm_graph_context::build_attn(
     // Q shape: (n_embd_head, n_head, n_tokens)
     // For turbo KV: rotate Q to match rotated K. Power-of-2 dims may need zero-padding.
     // Non-power-of-2 dims use Vilenkin-Hartley (no padding needed).
-    if (k->type == GGML_TYPE_TURBO3_0 || k->type == GGML_TYPE_TURBO4_0 || k->type == GGML_TYPE_TURBO2_0) {
+    if (ggml_is_turbo_type(k->type)) {
         const int turbo_group = turbo_select_group_size(k->ne[0]);
         const bool needs_pad = (turbo_group == 128 || turbo_group == 64) && q->ne[0] % turbo_group != 0;
         if (needs_pad) {
@@ -2180,7 +2186,7 @@ ggml_tensor * llm_graph_context::build_attn(
 
     // TurboQuant: if V was padded, the output has padded dimensions.
     // Extract original V head_dim after inverse WHT (applied inside build_attn_mha).
-    if (k->type == GGML_TYPE_TURBO3_0 || k->type == GGML_TYPE_TURBO4_0 || k->type == GGML_TYPE_TURBO2_0) {
+    if (ggml_is_turbo_type(k->type)) {
         const int64_t orig_v_head = hparams.n_embd_head_v(il);
         const int64_t padded_v_head = v->ne[0];
         if (padded_v_head != orig_v_head) {
@@ -2277,7 +2283,7 @@ ggml_tensor * llm_graph_context::build_attn(
     ggml_tensor * v = ggml_view_4d(ctx0, k, v_cur->ne[0], k->ne[1], k->ne[2], k->ne[3], k->nb[1], k->nb[2], k->nb[3], 0);
 
     // TurboQuant: pre-rotate Q for K-only (MLA) attention
-    if (k->type == GGML_TYPE_TURBO3_0 || k->type == GGML_TYPE_TURBO4_0 || k->type == GGML_TYPE_TURBO2_0) {
+    if (ggml_is_turbo_type(k->type)) {
         const int turbo_group = turbo_select_group_size(k->ne[0]);
         const bool needs_pad = (turbo_group == 128 || turbo_group == 64) && q->ne[0] % turbo_group != 0;
         if (needs_pad) {
@@ -2294,7 +2300,7 @@ ggml_tensor * llm_graph_context::build_attn(
 
     // TurboQuant: if V was padded (MLA: V is view of K, may have padded dim),
     // extract original V head_dim after inverse WHT.
-    if (k->type == GGML_TYPE_TURBO3_0 || k->type == GGML_TYPE_TURBO4_0 || k->type == GGML_TYPE_TURBO2_0) {
+    if (ggml_is_turbo_type(k->type)) {
         const int64_t orig_v_head = v_cur->ne[0];  // original V head_dim from model
         const int64_t padded_v_head = v->ne[0];     // padded V head_dim in cache
         if (padded_v_head != orig_v_head) {
@@ -2386,7 +2392,7 @@ ggml_tensor * llm_graph_context::build_attn(
     ggml_tensor * v = mctx_cur->get_v(ctx0, il);
 
     // TurboQuant: pre-rotate Q for ISWA attention
-    if (k->type == GGML_TYPE_TURBO3_0 || k->type == GGML_TYPE_TURBO4_0 || k->type == GGML_TYPE_TURBO2_0) {
+    if (ggml_is_turbo_type(k->type)) {
         const int turbo_group = turbo_select_group_size(k->ne[0]);
         const bool needs_pad = (turbo_group == 128 || turbo_group == 64) && q->ne[0] % turbo_group != 0;
         if (needs_pad) {
@@ -2402,7 +2408,7 @@ ggml_tensor * llm_graph_context::build_attn(
     cb(cur, "kqv_out", il);
 
     // TurboQuant: if V was padded, extract original V head_dim after inverse WHT
-    if (k->type == GGML_TYPE_TURBO3_0 || k->type == GGML_TYPE_TURBO4_0 || k->type == GGML_TYPE_TURBO2_0) {
+    if (ggml_is_turbo_type(k->type)) {
         const int64_t orig_v_head = hparams.n_embd_head_v(il);
         const int64_t padded_v_head = v->ne[0];
         if (padded_v_head != orig_v_head) {

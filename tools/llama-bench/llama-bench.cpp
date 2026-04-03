@@ -492,6 +492,9 @@ static ggml_type ggml_type_from_name(const std::string & s) {
     if (s == "turbo4") {
         return GGML_TYPE_TURBO4_0;
     }
+    if (s == "vilenkin3") {
+        return GGML_TYPE_VILENKIN_3;
+    }
 
     return GGML_TYPE_COUNT;
 }
