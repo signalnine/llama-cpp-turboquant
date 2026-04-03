@@ -251,6 +251,28 @@ standard models. The recipe:
 5. P2 detail indices are semi-universal (compact bitmask)
 6. P3 texture is position-specific (this is the error term)
 
-This could bridge the gap between the research's 10× compression and our 2× on
-standard models. The critical missing step was using composite padding instead of
-power-of-2 padding. Not yet validated end-to-end on Qwen — further work needed.
+### Validated on Qwen2.5-1.5B
+
+Composite padding (d=128→132) vs power-of-2 (d=128, WHT):
+
+| Regime | d=128 (WHT) | d=132 (VHT) | Delta |
+|--------|-------------|-------------|-------|
+| 10 coefficients (skeleton) | cos=0.604 | cos=0.672 | **+11%** |
+| 20 coefficients (detail) | cos=0.772 | cos=0.789 | +2% |
+| 48 coefficients (full) | cos=0.948 | cos=0.929 | -2% |
+
+Composite padding concentrates energy into fewer dominant coefficients but
+spreads the tail thinner. The **sparse regime benefits** (+11% at 10 coeffs)
+while the **dense regime is slightly worse** (-2% at 48 coeffs).
+
+This matches the multi-pass architecture: composite padding for P1 (skeleton,
+6-10 coefficients), potentially standard WHT for P2/P3 detail passes.
+
+### Key open question
+
+The author's 100% universality on Dolphin requires model-specific alignment.
+Our Qwen tests show +11% improvement with composite padding but not the
+crystalline universality. The gap may be closed by:
+1. Longer context (621 tokens in our test vs 512+ in the research)
+2. Per-layer-head masks (layer 0 shows 89.8% in top-48 already)
+3. Model architecture (Dolphin may have inherent prime-harmonic alignment)
