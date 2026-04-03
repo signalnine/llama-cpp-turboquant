@@ -131,8 +131,8 @@ Rules:
 
     # Check if the file was actually modified
     if ! git diff --quiet -- "$TARGET_FILE" 2>/dev/null; then
-        # Check no OTHER files were modified
-        OTHER_CHANGES=$(git diff --name-only | grep -v "$TARGET_FILE" | head -5)
+        # Check no OTHER source files were modified (ignore config/untracked)
+        OTHER_CHANGES=$(git diff --name-only -- '*.cu' '*.cuh' '*.cpp' '*.h' '*.c' | grep -vF "$TARGET_FILE" | head -5)
         if [[ -n "$OTHER_CHANGES" ]]; then
             echo ">>> SAFETY: Agent modified non-target files: $OTHER_CHANGES — reverting all" >&2
             git checkout -- .
