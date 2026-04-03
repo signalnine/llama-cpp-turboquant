@@ -4981,8 +4981,8 @@ static bool ggml_backend_cuda_device_supports_op(ggml_backend_dev_t dev, const g
         case GGML_OP_LOG:
             return true;
         case GGML_OP_TURBO_WHT:
-            return op->src[0]->type == GGML_TYPE_F32 && op->type == GGML_TYPE_F32 &&
-                   op->src[0]->ne[0] % 64 == 0;  // head dim must be divisible by 64 (supports 64 and 128 WHT groups)
+            // Supports any head_dim: pow2 uses WHT, non-pow2 uses Vilenkin-Hartley
+            return op->src[0]->type == GGML_TYPE_F32 && op->type == GGML_TYPE_F32;
         case GGML_OP_SSM_SCAN: {
             if (op->src[3]->ne[0] == 1) {
                 // Mamba2

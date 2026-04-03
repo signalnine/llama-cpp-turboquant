@@ -95,6 +95,112 @@ static __global__ void k_turbo_wht_f32(const float * __restrict__ src,
     dst[base + t] = result;
 }
 
+// ─── Vilenkin-Hartley kernel (non-power-of-2 group sizes) ────────────────────
+//
+// Mixed-radix butterfly in shared memory. One block per group, group_size threads.
+// Binary stages (p=2) use the same add/subtract butterfly as WHT.
+// p-ary stages (p=3,5,7,...) use the Discrete Hartley kernel: cas(2πkm/p).
+//
+// Runtime group_size (not templated) since non-pow2 dims are diverse.
+// No sign arrays for non-pow2 — the VHT itself provides decorrelation.
+
+static __global__ void k_vilenkin_f32(const float * __restrict__ src,
+                                       float * __restrict__ dst,
+                                       const float * __restrict__ scale_inv,
+                                       const int direction,
+                                       const int group_size,
+                                       const int n_factors,
+                                       const int * __restrict__ factors,
+                                       const int64_t n_groups,
+                                       const int64_t head_dim,
+                                       const int64_t groups_per_head) {
+    const int64_t g = blockIdx.x;
+    if (g >= n_groups) return;
+
+    const int t = threadIdx.x;
+    if (t >= group_size) return;
+
+    const int64_t head_idx    = g / groups_per_head;
+    const int64_t grp_in_head = g % groups_per_head;
+    const int64_t base        = head_idx * head_dim + grp_in_head * group_size;
+
+    extern __shared__ float s[];
+    // s[0..group_size-1] = working buffer
+    // s[group_size..2*group_size-1] = temp for p-ary stages
+
+    // Load
+    s[t] = src[base + t];
+    __syncthreads();
+
+    // InnerQ forward
+    if (direction == 0 && scale_inv != nullptr) {
+        s[t] *= scale_inv[t % group_size];
+        __syncthreads();
+    }
+
+    // Mixed-radix butterfly stages
+    int stride = 1;
+    for (int f = 0; f < n_factors; f++) {
+        const int p = factors[f];
+
+        if (p == 2) {
+            // Binary butterfly (same as WHT)
+            const int block_sz = stride * 2;
+            const int block_idx = t / block_sz;
+            const int pos = t % block_sz;
+            if (pos < stride) {
+                const int i = block_idx * block_sz + pos;
+                float a = s[i], b = s[i + stride];
+                s[i]          = a + b;
+                s[i + stride] = a - b;
+            }
+            __syncthreads();
+        } else {
+            // p-ary Hartley butterfly
+            float * tmp = s + group_size; // temp buffer in shmem
+            const int block_sz = stride * p;
+            const int block_idx = t / block_sz;
+            const int pos = t % block_sz;
+
+            if (pos < stride) {
+                const int j = pos;  // position within stride
+                const int base_idx = block_idx * block_sz + j;
+
+                // Gather p elements at stride-separated positions
+                // Compute p-point DHT: result[k] = sum_m val[m] * cas(2π*k*m/p)
+                for (int k = 0; k < p; k++) {
+                    float sum = 0.0f;
+                    for (int m = 0; m < p; m++) {
+                        float theta = 2.0f * 3.14159265358979323846f * (float)(k * m) / (float)p;
+                        sum += s[base_idx + m * stride] * (__cosf(theta) + __sinf(theta));
+                    }
+                    tmp[base_idx + k * stride] = sum;
+                }
+            }
+            __syncthreads();
+
+            // Copy back from temp
+            if (t < group_size) {
+                s[t] = tmp[t];
+            }
+            __syncthreads();
+        }
+
+        stride *= p;
+    }
+
+    // Normalize
+    const float inv_sqrt = rsqrtf((float)group_size);
+    float result = s[t] * inv_sqrt;
+
+    // InnerQ inverse
+    if (direction == 1 && scale_inv != nullptr) {
+        result *= scale_inv[t % group_size];
+    }
+
+    dst[base + t] = result;
+}
+
 // ─── Simple copy kernel for tail elements (identity pass-through) ────────────
 
 static __global__ void k_turbo_wht_copy_tail(const float * __restrict__ src,
@@ -131,7 +237,7 @@ void ggml_cuda_turbo_wht(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
     const int64_t head_dim        = src->ne[0];
     const int64_t n_heads         = ggml_nelements(src) / head_dim;
 
-    GGML_ASSERT(group_size == 64 || group_size == 128);
+    GGML_ASSERT(group_size > 0);
     const int64_t groups_per_head = head_dim / group_size;
     const int     tail_size       = (int)(head_dim % group_size);
     const int64_t n_groups        = groups_per_head * n_heads;
@@ -142,23 +248,62 @@ void ggml_cuda_turbo_wht(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
 
     cudaStream_t stream = ctx.stream();
 
+    const bool is_pow2 = (group_size & (group_size - 1)) == 0;
+
     // Process full groups
     if (n_groups > 0) {
         dim3 blocks(n_groups);
-        if (group_size == 128) {
-            dim3 threads(128);
-            if (direction == 0) {
-                k_turbo_wht_f32<0, 128><<<blocks, threads, 0, stream>>>(src_ptr, dst_ptr, scale_inv_ptr, n_groups, head_dim, groups_per_head);
+
+        if (is_pow2 && (group_size == 128 || group_size == 64)) {
+            // Power-of-2: use templated WHT kernel (existing fast path)
+            if (group_size == 128) {
+                dim3 threads(128);
+                if (direction == 0) {
+                    k_turbo_wht_f32<0, 128><<<blocks, threads, 0, stream>>>(src_ptr, dst_ptr, scale_inv_ptr, n_groups, head_dim, groups_per_head);
+                } else {
+                    k_turbo_wht_f32<1, 128><<<blocks, threads, 0, stream>>>(src_ptr, dst_ptr, scale_inv_ptr, n_groups, head_dim, groups_per_head);
+                }
             } else {
-                k_turbo_wht_f32<1, 128><<<blocks, threads, 0, stream>>>(src_ptr, dst_ptr, scale_inv_ptr, n_groups, head_dim, groups_per_head);
+                dim3 threads(64);
+                if (direction == 0) {
+                    k_turbo_wht_f32<0, 64><<<blocks, threads, 0, stream>>>(src_ptr, dst_ptr, scale_inv_ptr, n_groups, head_dim, groups_per_head);
+                } else {
+                    k_turbo_wht_f32<1, 64><<<blocks, threads, 0, stream>>>(src_ptr, dst_ptr, scale_inv_ptr, n_groups, head_dim, groups_per_head);
+                }
             }
         } else {
-            dim3 threads(64);
-            if (direction == 0) {
-                k_turbo_wht_f32<0, 64><<<blocks, threads, 0, stream>>>(src_ptr, dst_ptr, scale_inv_ptr, n_groups, head_dim, groups_per_head);
-            } else {
-                k_turbo_wht_f32<1, 64><<<blocks, threads, 0, stream>>>(src_ptr, dst_ptr, scale_inv_ptr, n_groups, head_dim, groups_per_head);
+            // Non-power-of-2 (or non-standard power-of-2): Vilenkin-Hartley kernel
+            // Compute prime factorization on host, upload to device
+            int h_factors[20];
+            int n_factors = 0;
+            {
+                int n = group_size;
+                int d = 2;
+                while (d * d <= n && n_factors < 20) {
+                    while (n % d == 0) { h_factors[n_factors++] = d; n /= d; }
+                    d++;
+                }
+                if (n > 1 && n_factors < 20) h_factors[n_factors++] = n;
             }
+
+            // Upload factors to device (small, ~80 bytes max)
+            int * d_factors = nullptr;
+            CUDA_CHECK(cudaMalloc(&d_factors, n_factors * sizeof(int)));
+            CUDA_CHECK(cudaMemcpyAsync(d_factors, h_factors, n_factors * sizeof(int),
+                                        cudaMemcpyHostToDevice, stream));
+
+            // Shared memory: 2 × group_size floats (working buffer + temp for p-ary stages)
+            const size_t shmem = 2 * group_size * sizeof(float);
+
+            // Round thread count up to next multiple of 32 (warp alignment)
+            const int n_threads = ((group_size + 31) / 32) * 32;
+
+            k_vilenkin_f32<<<blocks, n_threads, shmem, stream>>>(
+                src_ptr, dst_ptr, scale_inv_ptr,
+                direction, group_size, n_factors, d_factors,
+                n_groups, head_dim, groups_per_head);
+
+            CUDA_CHECK(cudaFree(d_factors));
         }
     }
 
