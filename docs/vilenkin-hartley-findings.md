@@ -209,3 +209,48 @@ geometric frequencies. Key findings we validated:
 The full potential of the Vilenkin coefficient cache would be realized on a model
 trained with SpectralRoPEALiBi (prime-harmonic PE) from scratch, where the KV cache
 is inherently sparse in the prime-harmonic basis.
+
+## 6. Highly Composite Padding (late finding)
+
+The original Position_Is_Arithmetic author revealed a critical detail: they pad
+head_dim=128 to **d=132 = 2² × 3 × 11**, not to the next power of 2. This
+introduces Z/3Z algebraic structure into the Vilenkin basis, creating bandpass bands
+that concentrate energy.
+
+Their results on Dolphin 3.2-1B:
+- P1 (Z/3Z skeleton): indices 48-53 at **100% universality** across ALL positions
+- P2 (Z/5Z detail): indices 31-41, semi-universal (86-97%)
+- P1 and P2 occupy **disjoint** Vilenkin bands (no overlap)
+- K and V use **disjoint** spectral bands (K: blocks 8-8, V: blocks 2-3/6-7/12-13)
+- Combined P1+P2 **tiles** the Z/3Z residue classes uniformly (max deviation <3.5%)
+
+Our verification on Qwen2.5-1.5B, d=128 vs d=132:
+
+| Layer | d=128 top-10 | d=132 top-10 | Delta |
+|-------|-------------|-------------|-------|
+| 0 | 36.4% | 44.6% | **+8.2%** |
+| 1 | 29.7% | 35.4% | **+5.7%** |
+| 2 | 23.5% | 28.5% | **+5.0%** |
+| 19 | 23.6% | 30.0% | **+6.4%** |
+| 27 | 24.2% | 29.4% | **+5.2%** |
+| 20 | 32.2% | 24.5% | -7.8% |
+
+The d=132 padding helps early layers (+5-8% energy concentration in top-10) but
+is inconsistent across mid/late layers. The effect is model-architecture-dependent —
+the author's Dolphin model shows perfect Z/3Z alignment; Qwen shows partial alignment.
+
+### Implications
+
+The highly composite padding is the key to making the coefficient cache work on
+standard models. The recipe:
+
+1. Pad head_dim to the nearest highly composite number (128→132, 80→84=2²×3×7)
+2. Apply VHT on the padded dimension (mixed-radix, not pure binary)
+3. The Z/3Z and Z/5Z substructures create natural bandpass bands
+4. P1 skeleton indices become universal (store once per layer/head)
+5. P2 detail indices are semi-universal (compact bitmask)
+6. P3 texture is position-specific (this is the error term)
+
+This could bridge the gap between the research's 10× compression and our 2× on
+standard models. The critical missing step was using composite padding instead of
+power-of-2 padding. Not yet validated end-to-end on Qwen — further work needed.
