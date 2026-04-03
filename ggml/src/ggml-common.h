@@ -333,6 +333,23 @@ typedef struct {
 } block_turbo2_0;                       // 10 bytes total
 static_assert(sizeof(block_turbo2_0) == sizeof(ggml_half) + QK_TURBO2/4, "wrong turbo2_0 block size/padding");
 
+// Vilenkin coefficient cache: stores sparse VHT coefficients instead of quantized values.
+// Each block represents QK_VILENKIN_3 elements but only stores VK_N_COEFFS coefficients.
+// The basis mask (which coefficients to store) is per-(layer,head) metadata stored separately.
+//
+// Per block: norm(fp16) + scale(fp16) + int4-packed coefficients
+// = 28 bytes per 128 elements = 1.75 bpv = 9.1× compression vs fp16
+//
+// Decode: unpack int4 → place at mask positions → inverse VHT → rescale by norm
+#define QK_VILENKIN_3 128          // elements represented per block (head_dim)
+#define VK_N_COEFFS 48             // number of stored coefficients (tunable, 48 ≈ 95% energy)
+typedef struct {
+    ggml_half  norm;               //  2 bytes: L2 norm for rescaling
+    ggml_half  scale;              //  2 bytes: coefficient quantization scale
+    uint8_t    coeffs[VK_N_COEFFS / 2]; // 24 bytes: int4-packed coefficient values
+} block_vilenkin_3;                // 28 bytes total
+static_assert(sizeof(block_vilenkin_3) == 2*sizeof(ggml_half) + VK_N_COEFFS/2, "wrong vilenkin_3 block size");
+
 //
 // Super-block quantization structures
 //

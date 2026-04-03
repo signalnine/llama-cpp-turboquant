@@ -113,6 +113,15 @@ GGML_API size_t quantize_turbo2_0(const float * GGML_RESTRICT src, void * GGML_R
 // Vilenkin-Hartley Transform: mixed-radix generalization of WHT for any dimension
 GGML_API void ggml_vilenkin_hartley_transform(float * x, int n);
 
+// Vilenkin coefficient cache: sparse VHT coefficient storage
+GGML_API void quantize_row_vilenkin_3_ref(const float * GGML_RESTRICT x, block_vilenkin_3 * GGML_RESTRICT y, int64_t k);
+GGML_API void dequantize_row_vilenkin_3(const block_vilenkin_3 * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k);
+
+// Set/get the shared basis mask for Vilenkin coefficient cache
+// mask: array of VK_N_COEFFS uint16_t indices (which VHT basis positions to store)
+GGML_API void ggml_vilenkin_set_basis_mask(const uint16_t * mask, int n_coeffs);
+GGML_API const uint16_t * ggml_vilenkin_get_basis_mask(void);
+
 GGML_API void iq2xs_init_impl(enum ggml_type type);
 GGML_API void iq2xs_free_impl(enum ggml_type type);
 GGML_API void iq3xs_init_impl(int grid_size);

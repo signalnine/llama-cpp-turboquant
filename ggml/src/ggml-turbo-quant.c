@@ -759,3 +759,123 @@ size_t quantize_turbo4_0(const float * GGML_RESTRICT src, void * GGML_RESTRICT d
     }
     return nrows * row_size;
 }
+
+/* ===================================================================
+ * Vilenkin Coefficient Cache (GGML_TYPE_VILENKIN_3)
+ *
+ * Stores sparse VHT coefficients instead of quantized rotated values.
+ * 48 coefficients × int4 + norm + scale = 28 bytes per 128 elements.
+ * 1.75 bpv = 9.1× compression vs fp16.
+ *
+ * The shared basis mask (which 48 of 128 VHT indices to store) is
+ * per-(layer,head) metadata set via ggml_vilenkin_set_basis_mask().
+ * =================================================================== */
+
+static uint16_t vk_basis_mask[VK_N_COEFFS] = {0};
+static int      vk_mask_ready = 0;
+
+static void vk_init_default_mask(int d) {
+    for (int i = 0; i < VK_N_COEFFS && i < d; i++)
+        vk_basis_mask[i] = (uint16_t)i;
+    vk_mask_ready = 1;
+}
+
+void ggml_vilenkin_set_basis_mask(const uint16_t * mask, int n_coeffs) {
+    int n = (n_coeffs < VK_N_COEFFS) ? n_coeffs : VK_N_COEFFS;
+    for (int i = 0; i < n; i++) vk_basis_mask[i] = mask[i];
+    for (int i = n; i < VK_N_COEFFS; i++) vk_basis_mask[i] = 0;
+    vk_mask_ready = 1;
+}
+
+const uint16_t * ggml_vilenkin_get_basis_mask(void) {
+    return vk_basis_mask;
+}
+
+/* Encode: float → block_vilenkin_3 */
+void quantize_row_vilenkin_3_ref(const float * GGML_RESTRICT x,
+                                  block_vilenkin_3 * GGML_RESTRICT y,
+                                  int64_t k) {
+    assert(k % QK_VILENKIN_3 == 0);
+    if (!vk_mask_ready) vk_init_default_mask(QK_VILENKIN_3);
+    const int nb = k / QK_VILENKIN_3;
+
+    for (int bi = 0; bi < nb; bi++) {
+        const float * src = x + bi * QK_VILENKIN_3;
+
+        float norm_sq = 0.0f;
+        for (int i = 0; i < QK_VILENKIN_3; i++) norm_sq += src[i] * src[i];
+        float norm = sqrtf(norm_sq);
+        y[bi].norm = GGML_FP32_TO_FP16(norm);
+
+        if (norm < 1e-12f) {
+            y[bi].scale = GGML_FP32_TO_FP16(0.0f);
+            memset(y[bi].coeffs, 0, VK_N_COEFFS / 2);
+            continue;
+        }
+
+        /* Forward VHT on normalized vector */
+        float buf[QK_VILENKIN_3];
+        float inv_norm = 1.0f / norm;
+        for (int i = 0; i < QK_VILENKIN_3; i++) buf[i] = src[i] * inv_norm;
+        vilenkin_hartley_transform(buf, QK_VILENKIN_3);
+
+        /* Extract coefficients at mask positions, find max */
+        float raw[VK_N_COEFFS];
+        float amax = 0.0f;
+        for (int i = 0; i < VK_N_COEFFS; i++) {
+            int idx = vk_basis_mask[i];
+            raw[i] = (idx < QK_VILENKIN_3) ? buf[idx] : 0.0f;
+            float a = fabsf(raw[i]);
+            if (a > amax) amax = a;
+        }
+
+        /* Quantize to int4 [-8, 7] */
+        float scale = amax / 7.0f;
+        y[bi].scale = GGML_FP32_TO_FP16(scale);
+        float inv_scale = (scale > 1e-12f) ? 7.0f / amax : 0.0f;
+
+        memset(y[bi].coeffs, 0, VK_N_COEFFS / 2);
+        for (int i = 0; i < VK_N_COEFFS; i++) {
+            int q = (int)roundf(raw[i] * inv_scale);
+            if (q < -8) q = -8;
+            if (q >  7) q =  7;
+            uint8_t uq = (uint8_t)(q + 8);
+            if (i & 1)
+                y[bi].coeffs[i / 2] |= (uq << 4);
+            else
+                y[bi].coeffs[i / 2] = uq;
+        }
+    }
+}
+
+/* Decode: block_vilenkin_3 → float */
+void dequantize_row_vilenkin_3(const block_vilenkin_3 * GGML_RESTRICT x,
+                                float * GGML_RESTRICT y,
+                                int64_t k) {
+    assert(k % QK_VILENKIN_3 == 0);
+    if (!vk_mask_ready) vk_init_default_mask(QK_VILENKIN_3);
+    const int nb = k / QK_VILENKIN_3;
+
+    for (int bi = 0; bi < nb; bi++) {
+        float norm  = GGML_FP16_TO_FP32(x[bi].norm);
+        float scale = GGML_FP16_TO_FP32(x[bi].scale);
+
+        /* Reconstruct sparse coefficient vector */
+        float buf[QK_VILENKIN_3];
+        memset(buf, 0, QK_VILENKIN_3 * sizeof(float));
+        for (int i = 0; i < VK_N_COEFFS; i++) {
+            uint8_t packed = x[bi].coeffs[i / 2];
+            uint8_t uq = (i & 1) ? (packed >> 4) : (packed & 0xF);
+            float val = ((int)uq - 8) * scale;
+            int idx = vk_basis_mask[i];
+            if (idx < QK_VILENKIN_3) buf[idx] = val;
+        }
+
+        /* Inverse VHT (self-inverse) */
+        vilenkin_hartley_transform(buf, QK_VILENKIN_3);
+
+        /* Rescale */
+        float * dst = y + bi * QK_VILENKIN_3;
+        for (int i = 0; i < QK_VILENKIN_3; i++) dst[i] = buf[i] * norm;
+    }
+}
