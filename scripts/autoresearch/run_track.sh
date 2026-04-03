@@ -127,7 +127,7 @@ Rules:
     echo ">>> Invoking agent..." >&2
     claude -p "$AGENT_PROMPT" \
         --allowedTools Read,Edit \
-        --max-turns 10 \
+        --max-turns 20 \
         2>&1 | tee /dev/stderr | tail -1 > /dev/null || true
 
     # Check if the file was actually modified

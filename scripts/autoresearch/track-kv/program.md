@@ -51,18 +51,29 @@ attention for one head. The kernel has two main phases:
 | Larger LUT (16-entry for turbo3) | No improvement | 8-entry already covers 3-bit |
 | Different occupancy (1, 2, 4) | 3 is optimal | Lower occupancy = less latency hiding |
 | V dequant loop unroll | No improvement | Compiler already unrolling |
+| `expf` → `__expf` fast-math | Already applied | +0.1%, already in current code |
+| Sparse V threshold tuning | Already at 1e-3 | Hill-climbed 1e-6→1e-4→5e-4→1e-3→2e-3, diminishing returns. Do NOT keep bumping this — higher thresholds risk PPL regression at long context. The current value is already aggressive. |
+| L2 prefetch for next K/V blocks | +0.1% | Already tried, marginal gain |
+| L1 vs L2 prefetch | No difference | Tried both, within noise |
+| `__launch_bounds__` occupancy 1→2→3 | Occupancy 2 marginally best | Already applied |
 
 ## Promising Directions to Explore
+Focus on STRUCTURAL changes to the kernel, not parameter tuning.
 - **V dequant arithmetic optimization**: Current V dequant does centroid lookup +
   norm multiply per element. Could precompute scaled centroids per V block.
 - **KQ scoring with dp4a**: If Q and K can both be int8, dp4a for KQ dot product.
 - **Warp specialization**: Dedicate some warps to K prefetch, others to V prefetch.
-- **Double buffering**: Prefetch next KV block while processing current one.
+- **Double buffering**: Prefetch next KV block while processing current one
+  using cp.async or separate warp.
 - **Register pressure reduction**: Profile register usage, reduce if spilling.
 - **Shared memory V cache**: Cache frequently-accessed V blocks in shmem.
 - **Half2 accumulation**: Use fp16 for intermediate attention weight accumulation.
-- **Adaptive sparse V threshold**: Dynamic threshold based on attention entropy.
 - **Fused softmax + V aggregation**: Combine the two passes into one.
+- **Vectorized memory loads**: Use `float4` or `uint4` loads for K/V data.
+- **Loop interchange**: Change iteration order (heads vs KV positions) for
+  better cache locality.
+- **Reduce warp reduction overhead**: The `__shfl_xor_sync` reduction at end
+  of KQ scoring runs 5 stages — can we accumulate differently?
 
 ## Constraints
 - Must not change the turbo block format ABI (shared with Metal/CPU)
