@@ -307,7 +307,7 @@ static __global__ void flash_attn_ext_vec(
 
             KQ_reg[j] = __expf(KQ_reg[j] - KQ_max[j]);
             KQ_sum[j] = KQ_sum[j]*KQ_max_scale + KQ_reg[j];
-            KQ[j*nthreads + tid] = KQ_reg[j];
+            if constexpr (!V_is_turbo) { KQ[j*nthreads + tid] = KQ_reg[j]; }
 
 #ifdef V_DOT2_F32_F16_AVAILABLE
             const half2 KQ_max_scale_h2 = make_half2(KQ_max_scale, KQ_max_scale);
@@ -325,7 +325,7 @@ static __global__ void flash_attn_ext_vec(
         }
 
 #ifndef GGML_USE_HIP
-        __syncwarp();
+        if constexpr (!V_is_turbo) { __syncwarp(); }
 #endif // GGML_USE_HIP
 
 #pragma unroll
@@ -336,7 +336,12 @@ static __global__ void flash_attn_ext_vec(
             half2 KQ_k[ncols];
 #pragma unroll
             for (int j = 0; j < ncols; ++j) {
-                KQ_k[j] = __half2half2(KQ[j*nthreads + k]);
+                if constexpr (V_is_turbo) {
+                    const float kq_val = __shfl_sync(0xFFFFFFFF, KQ_reg[j], k0 + (nthreads_V == WARP_SIZE ? 0 : threadIdx.x / nthreads_V));
+                    KQ_k[j] = make_half2(__float2half(kq_val), __float2half(kq_val));
+                } else {
+                    KQ_k[j] = __half2half2(KQ[j*nthreads + k]);
+                }
             }
 
             // Sparse V: skip V dequant if all attention weights for this position are negligible
@@ -376,7 +381,11 @@ static __global__ void flash_attn_ext_vec(
             float KQ_k[ncols];
 #pragma unroll
             for (int j = 0; j < ncols; ++j) {
-                KQ_k[j] = KQ[j*nthreads + k];
+                if constexpr (V_is_turbo) {
+                    KQ_k[j] = __shfl_sync(0xFFFFFFFF, KQ_reg[j], k0 + (nthreads_V == WARP_SIZE ? 0 : threadIdx.x / nthreads_V));
+                } else {
+                    KQ_k[j] = KQ[j*nthreads + k];
+                }
             }
 
             // Sparse V: skip V dequant if all attention weights for this position are negligible
