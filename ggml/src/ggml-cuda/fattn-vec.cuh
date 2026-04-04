@@ -82,7 +82,11 @@ static __global__ void flash_attn_ext_vec(
     // Turbo KQ dot does byte extraction + centroid lookup + scalar mul, not vectorized f16 loads.
     // Fewer threads per product (4 vs 8) = more concurrent products per warp + better ILP.
     constexpr int nthreads_KQ = K_is_turbo ? 2 : (K_is_unquantized ? 128 / cpy_nb : nthreads_KQ_q);
-    constexpr int nthreads_V  = V_is_unquantized ? ((type_V == GGML_TYPE_TURBO3_0 || type_V == GGML_TYPE_TURBO2_0 || type_V == GGML_TYPE_TURBO4_0) ? nthreads_V_q : 128 / cpy_nb) : nthreads_V_q;
+    constexpr bool V_is_turbo = (type_V == GGML_TYPE_TURBO3_0 || type_V == GGML_TYPE_TURBO2_0 || type_V == GGML_TYPE_TURBO4_0);
+    // Turbo V dequant is scalar (byte extract + LUT), not vectorized loads.
+    // Halve nthreads_V to double V_cols_per_iter (process 2 V rows per loop iteration),
+    // reducing loop overhead and improving ILP in the V aggregation phase.
+    constexpr int nthreads_V  = V_is_unquantized ? (V_is_turbo ? (nthreads_V_q / 2 < 1 ? 1 : nthreads_V_q / 2) : 128 / cpy_nb) : nthreads_V_q;
 
     static_assert(WARP_SIZE % nthreads_KQ == 0, "bad nthreads_K");
     static_assert(WARP_SIZE % nthreads_V  == 0, "bad nthreads_V");
