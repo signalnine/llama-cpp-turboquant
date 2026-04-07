@@ -323,7 +323,7 @@ static __device__ __forceinline__ float vec_dot_fattn_vec_KQ_turbo3_0(
             const int j0    = elem0 % QK_TURBO3;          // always even, 0..30
 
             // Single loads for the shared block fields
-            const float     norm     = __half2float(K_turbo[ib].norm);
+            const float     norm     = __half2float(K_turbo[ib].norm) * d_turbo_alpha;
             const uint8_t   qs_byte  = K_turbo[ib].qs[j0 / 4];      // covers both j0 and j0+1
             const uint8_t   sgn_byte = K_turbo[ib].signs[j0 / 8];   // covers both j0 and j0+1
 
@@ -374,7 +374,7 @@ static __device__ __forceinline__ float vec_dot_fattn_vec_KQ_turbo2_0(
             const int ib    = elem0 / QK_TURBO2;
             const int j0    = elem0 % QK_TURBO2;
 
-            const float     norm     = __half2float(K_turbo[ib].norm);
+            const float     norm     = __half2float(K_turbo[ib].norm) * d_turbo_alpha;
             const uint8_t   qs_byte  = K_turbo[ib].qs[j0 / 4];
 
             const int     shift  = (j0 % 4) * 2;
@@ -423,7 +423,7 @@ static __device__ __forceinline__ float vec_dot_fattn_vec_KQ_turbo4_0(
             const int ib    = elem0 / QK_TURBO4;           // block index
             const int j0    = elem0 % QK_TURBO4;           // always even
 
-            const float   norm    = __half2float(K_turbo[ib].norm);
+            const float   norm    = __half2float(K_turbo[ib].norm) * d_turbo_alpha;
             // Both j0 and j0+1 are adjacent nibbles: j0/2 == (j0+1)/2 when j0 is even
             const uint8_t qs_byte = K_turbo[ib].qs[j0 / 2];
 
@@ -747,7 +747,7 @@ static __device__ __forceinline__ void dequantize_V_turbo3_0(const void * __rest
 
     const int64_t ib   = i0 / QK_TURBO3;
     const int     j0   = i0 % QK_TURBO3;
-    const float   norm = __half2float(x[ib].norm);
+    const float   norm = __half2float(x[ib].norm) * d_turbo_alpha;
 
     static_assert(ne == 2 || ne == 4, "bad ne");
 
@@ -807,7 +807,7 @@ static __device__ __forceinline__ void dequantize_V_turbo2_0(const void * __rest
 
     const int64_t ib   = i0 / QK_TURBO2;
     const int     j0   = i0 % QK_TURBO2;
-    const float   norm = __half2float(x[ib].norm);
+    const float   norm = __half2float(x[ib].norm) * d_turbo_alpha;
 
     static_assert(ne == 2 || ne == 4, "bad ne");
 
@@ -864,7 +864,7 @@ static __device__ __forceinline__ void dequantize_V_turbo4_0(const void * __rest
 
     const int64_t ib   = i0 / QK_TURBO4;
     const int     j0   = i0 % QK_TURBO4;
-    const float   norm = __half2float(x[ib].norm);
+    const float   norm = __half2float(x[ib].norm) * d_turbo_alpha;
 
     static_assert(ne == 2 || ne == 4, "bad ne");
 

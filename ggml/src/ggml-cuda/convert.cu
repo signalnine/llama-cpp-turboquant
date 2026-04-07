@@ -711,6 +711,7 @@ to_bf16_cuda_t ggml_get_to_bf16_cuda(ggml_type type) {
 }
 
 to_fp16_cuda_t ggml_get_to_fp16_cuda(ggml_type type) {
+    turbo_ensure_alpha_cuda();
     switch (type) {
         case GGML_TYPE_Q4_0:
             return dequantize_row_q4_0_cuda;
@@ -777,6 +778,7 @@ to_fp16_cuda_t ggml_get_to_fp16_cuda(ggml_type type) {
 }
 
 to_fp32_cuda_t ggml_get_to_fp32_cuda(ggml_type type) {
+    turbo_ensure_alpha_cuda();
     switch (type) {
         case GGML_TYPE_Q4_0:
             return dequantize_row_q4_0_cuda;

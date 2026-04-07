@@ -81,7 +81,7 @@ static __device__ __forceinline__ void dequantize_q8_0(const void * vx, const in
 // iqs is the element index within the block (even), produces elements iqs and iqs+1
 static __device__ __forceinline__ void dequantize_turbo4_0(const void * vx, const int64_t ib, const int iqs, float2 & v){
     const block_turbo4_0 * x = (const block_turbo4_0 *) vx;
-    const float norm = __half2float(x[ib].norm);
+    const float norm = __half2float(x[ib].norm) * d_turbo_alpha;
     v.x = turbo4_dequant_element(&x[ib], iqs + 0, norm);
     v.y = turbo4_dequant_element(&x[ib], iqs + 1, norm);
 }
@@ -90,7 +90,7 @@ static __device__ __forceinline__ void dequantize_turbo4_0(const void * vx, cons
 // iqs is the element index within the block (even), produces elements iqs and iqs+1
 static __device__ __forceinline__ void dequantize_turbo3_0(const void * vx, const int64_t ib, const int iqs, float2 & v){
     const block_turbo3_0 * x = (const block_turbo3_0 *) vx;
-    const float norm = __half2float(x[ib].norm);
+    const float norm = __half2float(x[ib].norm) * d_turbo_alpha;
     v.x = turbo3_dequant_element(&x[ib], iqs + 0, norm);
     v.y = turbo3_dequant_element(&x[ib], iqs + 1, norm);
 }
@@ -98,7 +98,7 @@ static __device__ __forceinline__ void dequantize_turbo3_0(const void * vx, cons
 // Turbo2: 2-bit PolarQuant (2-bit qs only, no sign), block size 32
 static __device__ __forceinline__ void dequantize_turbo2_0(const void * vx, const int64_t ib, const int iqs, float2 & v){
     const block_turbo2_0 * x = (const block_turbo2_0 *) vx;
-    const float norm = __half2float(x[ib].norm);
+    const float norm = __half2float(x[ib].norm) * d_turbo_alpha;
     v.x = turbo2_dequant_element(&x[ib], iqs + 0, norm);
     v.y = turbo2_dequant_element(&x[ib], iqs + 1, norm);
 }

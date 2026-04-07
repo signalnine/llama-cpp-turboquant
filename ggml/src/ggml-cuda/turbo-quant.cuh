@@ -13,6 +13,28 @@
 #include <cstdlib>
 #include <cmath>
 
+// ---- Alpha scaling for turbo dequant norms ----
+// Set via TURBO_ALPHA env var (integer, default 100 = 1.00x).
+// Q4_K_M models benefit from alpha=1.02 (TURBO_ALPHA=102, 10-17% KLD improvement).
+// See: https://huggingface.co/datasets/spiritbuun/turboquant-tcq-kv-cache
+
+static __constant__ float d_turbo_alpha = 1.0f;
+
+static float turbo_get_alpha() {
+    static float alpha = -1.0f;
+    if (alpha < 0.0f) {
+        alpha = 1.0f;
+        const char * env = getenv("TURBO_ALPHA");
+        if (env) {
+            int val = atoi(env);
+            if (val > 0 && val < 200) {
+                alpha = (float)val / 100.0f;
+            }
+        }
+    }
+    return alpha;
+}
+
 // ---- Quantization ratios for dequantize_block template ----
 #define QR_TURBO3 1  // Each dequantize call produces 2 consecutive elements (like q8_0)
 #define QR_TURBO2 1  // Each dequantize call produces 2 consecutive elements (like q8_0)
@@ -451,3 +473,17 @@ static __constant__ float TQ_WEIGHT_SIGNS[32] = {
     -1.0f, -1.0f, +1.0f, -1.0f, +1.0f, -1.0f, -1.0f, +1.0f,
     -1.0f, +1.0f, +1.0f, -1.0f, +1.0f, -1.0f, -1.0f, +1.0f
 };
+
+// ---- Alpha scaling: set d_turbo_alpha per TU ----
+// Must be defined after centroid arrays. Called once per TU on first use.
+static void turbo_ensure_alpha_cuda() {
+    static bool initialized = false;
+    if (initialized) return;
+    initialized = true;
+
+    float alpha = turbo_get_alpha();
+    if (alpha == 1.0f) return;
+
+    (void) cudaMemcpyToSymbol(d_turbo_alpha, &alpha, sizeof(float));
+    GGML_LOG_WARN("turbo alpha scaling = %.2f (TURBO_ALPHA)\n", alpha);
+}
